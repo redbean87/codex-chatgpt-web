@@ -258,8 +258,12 @@ export function resolveRoute(traceId: string | undefined, deps: RouteDeps = defa
     deps.log(`project route not resolved: ${error instanceof Error ? error.message : String(error)}`);
     decision = { kind: "none" };
   }
-  deps.memo.set(traceId, decision);
-  if (deps.memo.size > 256) deps.memo.delete(deps.memo.keys().next().value!);
+  // A request without a route is not memoized: the server records routes before dispatch, so
+  // a later preparation of the same trace id may legitimately find one.
+  if (decision.kind !== "none") {
+    deps.memo.set(traceId, decision);
+    if (deps.memo.size > 256) deps.memo.delete(deps.memo.keys().next().value!);
+  }
   return decision;
 }
 

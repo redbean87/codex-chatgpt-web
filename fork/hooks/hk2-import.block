@@ -1,0 +1,3 @@
+// >>> fork project-route hook HK2-IMPORT (fork/README)
+import { prepareProjectSurface as forkPrepareProjectSurface } from "../../../fork/project-route";
+// <<< fork project-route hook HK2-IMPORT

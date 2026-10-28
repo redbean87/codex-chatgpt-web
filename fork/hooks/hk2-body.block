@@ -1,0 +1,15 @@
+    // >>> fork project-route hook HK2 (fork/README)
+    const projectComposer = await forkPrepareProjectSurface({
+      page,
+      traceId: routeKey,
+      goto: (url, timeout) => withBrowserTurnAbort(page.goto(url, { waitUntil: "domcontentloaded", timeout }), abortSignal),
+      activeComposer: timeoutMs => this.activeComposer(page, timeoutMs, abortSignal),
+      verifySession: async () => {
+        await throwIfChatGptSessionFailureAlert(page);
+        await assertAuthenticatedChatGptPage(page);
+      },
+      captureDiagnostic,
+      abortSignal,
+    });
+    if (projectComposer) return projectComposer;
+    // <<< fork project-route hook HK2

@@ -118,6 +118,9 @@ import type {
   ChatGptExternalTurnProgressSnapshot,
   ChatGptTurnProgressReader,
 } from "./turn-progress";
+// >>> fork project-route hook HK2-IMPORT (fork/README)
+import { prepareProjectSurface as forkPrepareProjectSurface } from "../../../fork/project-route";
+// <<< fork project-route hook HK2-IMPORT
 
 export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
@@ -2496,8 +2499,26 @@ export class ChatGptBrowserWorker {
     page: Page,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     abortSignal?: AbortSignal,
+    // >>> fork project-route hook HK2-SIG (fork/README)
+    routeKey?: string,
+    // <<< fork project-route hook HK2-SIG
   ): Promise<Locator> {
     throwIfPromptAttachmentAborted(abortSignal);
+    // >>> fork project-route hook HK2 (fork/README)
+    const projectComposer = await forkPrepareProjectSurface({
+      page,
+      traceId: routeKey,
+      goto: (url, timeout) => withBrowserTurnAbort(page.goto(url, { waitUntil: "domcontentloaded", timeout }), abortSignal),
+      activeComposer: timeoutMs => this.activeComposer(page, timeoutMs, abortSignal),
+      verifySession: async () => {
+        await throwIfChatGptSessionFailureAlert(page);
+        await assertAuthenticatedChatGptPage(page);
+      },
+      captureDiagnostic,
+      abortSignal,
+    });
+    if (projectComposer) return projectComposer;
+    // <<< fork project-route hook HK2
     // Launcher verification refreshes its owned page before attaching Playwright so a newly added
     // connector is present in the catalog. Navigating again here destroys that freshly hydrated
     // document and made the first verification race a second SPA bootstrap. A leased turn starts on
@@ -5110,6 +5131,9 @@ export class ChatGptBrowserWorker {
             page,
             checkpoint => diagnostics.capture(page, checkpoint),
             turn.abortSignal,
+            // >>> fork project-route hook HK2-ARG-TURN (fork/README)
+            turn.traceId,
+            // <<< fork project-route hook HK2-ARG-TURN
           ),
         );
       }
@@ -5335,6 +5359,9 @@ export class ChatGptBrowserWorker {
                 page,
                 checkpoint => diagnostics.capture(page, checkpoint),
                 turn.abortSignal,
+                // >>> fork project-route hook HK2-ARG-RETRY (fork/README)
+                turn.traceId,
+                // <<< fork project-route hook HK2-ARG-RETRY
               );
               mode = await this.selectModelAndEffort(
                 page,

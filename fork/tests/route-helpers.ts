@@ -79,3 +79,46 @@ export function fakePage(initialUrl = "about:blank") {
   };
   return page satisfies SurfacePage & Record<string, unknown>;
 }
+
+/** Drives prepareProjectSurface with a scripted page. */
+export function scriptedSurface(page: ReturnType<typeof fakePage>, options: {
+  gotoFailures?: number;
+  composerFailures?: number;
+  redirect?: Record<string, string>;
+  advance?: (ms: number) => void;
+} = {}) {
+  const calls = { goto: [] as Array<{ url: string; timeout: number }>, composer: 0, verify: 0, checkpoints: [] as string[] };
+  let gotoFailures = options.gotoFailures ?? 0;
+  let composerFailures = options.composerFailures ?? 0;
+  const composer = { name: "composer" };
+  return {
+    calls,
+    composer,
+    input: {
+      page,
+      goto: async (url: string, timeout: number) => {
+        calls.goto.push({ url, timeout });
+        if (gotoFailures > 0) {
+          gotoFailures -= 1;
+          options.advance?.(45_000);
+          throw new Error("Timeout 30000ms exceeded");
+        }
+        page.navigate(options.redirect?.[url] ?? url);
+      },
+      activeComposer: async () => {
+        calls.composer += 1;
+        if (composerFailures > 0) {
+          composerFailures -= 1;
+          throw new Error("ChatGPT composer is unavailable");
+        }
+        return composer;
+      },
+      verifySession: async () => {
+        calls.verify += 1;
+      },
+      captureDiagnostic: async (checkpoint: string) => {
+        calls.checkpoints.push(checkpoint);
+      },
+    },
+  };
+}
