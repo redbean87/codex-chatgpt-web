@@ -52,6 +52,9 @@ import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "
 import type { CodexProviderConfig } from "./types";
 import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
+// >>> fork project-route hook HK1-IMPORT (fork/README)
+import { forkRecordProjectRoute } from "../fork/project-route";
+// <<< fork project-route hook HK1-IMPORT
 
 type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified" | NativeImageEndpoint;
 
@@ -764,6 +767,9 @@ export async function responseRequest(
     if (!message.includes("requires native Codex turn_id metadata")
       && !message.includes("requires a current-turn user message")) throw error;
   }
+  // >>> fork project-route hook HK1 (fork/README)
+  forkRecordProjectRoute(traceId, req.headers);
+  // <<< fork project-route hook HK1
   const cancelledError = traceId ? chatGptTurnSessions.cancelledError(traceId) : undefined;
   if (cancelledError) {
     // Codex retries unknown streamed response.failed codes. A replay after the user explicitly

@@ -118,6 +118,9 @@ import type {
   ChatGptExternalTurnProgressSnapshot,
   ChatGptTurnProgressReader,
 } from "./turn-progress";
+// >>> fork project-route hook HK2-IMPORT (fork/README)
+import { prepareProjectSurface as forkPrepareProjectSurface } from "../../../fork/project-route";
+// <<< fork project-route hook HK2-IMPORT
 
 export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
@@ -2496,8 +2499,26 @@ export class ChatGptBrowserWorker {
     page: Page,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     abortSignal?: AbortSignal,
+    // >>> fork project-route hook HK2-SIG (fork/README)
+    routeKey?: string,
+    // <<< fork project-route hook HK2-SIG
   ): Promise<Locator> {
     throwIfPromptAttachmentAborted(abortSignal);
+    // >>> fork project-route hook HK2 (fork/README)
+    const projectComposer = await forkPrepareProjectSurface({
+      page,
+      traceId: routeKey,
+      goto: (url, timeout) => withBrowserTurnAbort(page.goto(url, { waitUntil: "domcontentloaded", timeout }), abortSignal),
+      activeComposer: timeoutMs => this.activeComposer(page, timeoutMs, abortSignal),
+      verifySession: async () => {
+        await throwIfChatGptSessionFailureAlert(page);
+        await assertAuthenticatedChatGptPage(page);
+      },
+      captureDiagnostic,
+      abortSignal,
+    });
+    if (projectComposer) return projectComposer;
+    // <<< fork project-route hook HK2
     // Launcher verification refreshes its owned page before attaching Playwright so a newly added
     // connector is present in the catalog. Navigating again here destroys that freshly hydrated
     // document and made the first verification race a second SPA bootstrap. A leased turn starts on
@@ -4181,12 +4202,59 @@ export class ChatGptBrowserWorker {
         // and Markdown conversion; otherwise the toolbar changes the committed text and
         // Turndown collapses code newlines as if they were ordinary inline whitespace.
         const codeBlockSelector = 'pre, [data-markdown-copy="code-block"]';
+        // Captured 2026-10-23: the current renderer can leave CODE without any attribute and
+        // name the language only as text in the block's own excluded toolbar. Accept it only
+        // when that toolbar holds exactly one text label and the label is a known language
+        // name; other page text and the code itself never decide a fence label.
+        const toolbarLanguages = new Map(Object.entries({
+          bash: "bash", c: "c", "c#": "csharp", "c++": "cpp", css: "css", diff: "diff", go: "go",
+          html: "html", java: "java", javascript: "javascript", json: "json", markdown: "markdown",
+          python: "python", ruby: "ruby", rust: "rust", sh: "sh", shell: "shell", sql: "sql",
+          toml: "toml", typescript: "typescript", xml: "xml", yaml: "yaml", zsh: "zsh",
+        }));
+        const toolbarLanguage = (block: Element, code: Element): string | undefined => {
+          const toolbars = Array.from(block.children)
+            .filter(child => child.matches('[data-markdown-copy="exclude"]') && !child.contains(code));
+          if (toolbars.length !== 1) return undefined;
+          const labels: string[] = [];
+          const visit = (node: Node) => {
+            if (node.nodeType === Node.TEXT_NODE) {
+              const text = node.textContent?.trim();
+              if (text) labels.push(text);
+            } else if (node.nodeType === Node.ELEMENT_NODE && !(node as Element).matches("[data-code-block-controls]")) {
+              node.childNodes.forEach(visit);
+            }
+          };
+          toolbars[0]!.childNodes.forEach(visit);
+          return labels.length === 1 ? toolbarLanguages.get(labels[0]!.toLowerCase()) : undefined;
+        };
         for (const block of Array.from(content.querySelectorAll(codeBlockSelector))) {
           if (block.parentElement?.closest(codeBlockSelector)) continue;
           const codes = block.querySelectorAll("code");
           let code: Node;
           if (codes.length === 1) {
-            code = codes[0]!.cloneNode(true);
+            const original = codes[0]!;
+            const clone = original.cloneNode(true) as Element;
+            // Turndown reads a fence's language only from a language-* class on CODE. When
+            // CODE has none, ChatGPT may still declare it as data-language on the CODE, its
+            // PRE, or the code-block wrapper. The nearest declaration within this block
+            // decides, and an invalid one leaves the fence unlabelled rather than deferring
+            // to the toolbar. Without any declaration, only a known toolbar label can name it,
+            // and otherwise the fence stays unlabelled.
+            if (!/(?:^|\s)language-\S/.test(clone.getAttribute("class") ?? "")) {
+              let declared: string | undefined;
+              for (let node: Element | null = original; node && declared === undefined; node = node === block ? null : node.parentElement) {
+                const value = node.getAttribute("data-language")?.trim();
+                if (value) declared = value;
+              }
+              if (declared !== undefined) {
+                if (/^[A-Za-z0-9][A-Za-z0-9_+.#-]{0,31}$/.test(declared)) clone.classList.add(`language-${declared}`);
+              } else {
+                const labelled = toolbarLanguage(block, original);
+                if (labelled) clone.classList.add(`language-${labelled}`);
+              }
+            }
+            code = clone;
           } else {
             // Captured 2026-10-11 (#815): interactive code blocks use CodeMirror
             // DIV lines instead of CODE/PRE. Read their language and logical lines,
@@ -5063,6 +5131,9 @@ export class ChatGptBrowserWorker {
             page,
             checkpoint => diagnostics.capture(page, checkpoint),
             turn.abortSignal,
+            // >>> fork project-route hook HK2-ARG-TURN (fork/README)
+            turn.traceId,
+            // <<< fork project-route hook HK2-ARG-TURN
           ),
         );
       }
@@ -5288,6 +5359,9 @@ export class ChatGptBrowserWorker {
                 page,
                 checkpoint => diagnostics.capture(page, checkpoint),
                 turn.abortSignal,
+                // >>> fork project-route hook HK2-ARG-RETRY (fork/README)
+                turn.traceId,
+                // <<< fork project-route hook HK2-ARG-RETRY
               );
               mode = await this.selectModelAndEffort(
                 page,

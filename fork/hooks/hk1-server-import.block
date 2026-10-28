@@ -1,0 +1,3 @@
+// >>> fork project-route hook HK1-IMPORT (fork/README)
+import { forkRecordProjectRoute } from "../fork/project-route";
+// <<< fork project-route hook HK1-IMPORT
