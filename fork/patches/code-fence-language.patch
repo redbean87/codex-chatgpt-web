@@ -1,0 +1,65 @@
+diff --git a/src/adapters/chatgpt-web/browser-worker.ts b/src/adapters/chatgpt-web/browser-worker.ts
+index 7f3f525..0fbae25 100644
+--- a/src/adapters/chatgpt-web/browser-worker.ts
++++ b/src/adapters/chatgpt-web/browser-worker.ts
+@@ -4591,12 +4591,59 @@ export class ChatGptBrowserWorker {
+         // and Markdown conversion; otherwise the toolbar changes the committed text and
+         // Turndown collapses code newlines as if they were ordinary inline whitespace.
+         const codeBlockSelector = 'pre, [data-markdown-copy="code-block"]';
++        // Captured 2026-10-23: the current renderer can leave CODE without any attribute and
++        // name the language only as text in the block's own excluded toolbar. Accept it only
++        // when that toolbar holds exactly one text label and the label is a known language
++        // name; other page text and the code itself never decide a fence label.
++        const toolbarLanguages = new Map(Object.entries({
++          bash: "bash", c: "c", "c#": "csharp", "c++": "cpp", css: "css", diff: "diff", go: "go",
++          html: "html", java: "java", javascript: "javascript", json: "json", markdown: "markdown",
++          python: "python", ruby: "ruby", rust: "rust", sh: "sh", shell: "shell", sql: "sql",
++          toml: "toml", typescript: "typescript", xml: "xml", yaml: "yaml", zsh: "zsh",
++        }));
++        const toolbarLanguage = (block: Element, code: Element): string | undefined => {
++          const toolbars = Array.from(block.children)
++            .filter(child => child.matches('[data-markdown-copy="exclude"]') && !child.contains(code));
++          if (toolbars.length !== 1) return undefined;
++          const labels: string[] = [];
++          const visit = (node: Node) => {
++            if (node.nodeType === Node.TEXT_NODE) {
++              const text = node.textContent?.trim();
++              if (text) labels.push(text);
++            } else if (node.nodeType === Node.ELEMENT_NODE && !(node as Element).matches("[data-code-block-controls]")) {
++              node.childNodes.forEach(visit);
++            }
++          };
++          toolbars[0]!.childNodes.forEach(visit);
++          return labels.length === 1 ? toolbarLanguages.get(labels[0]!.toLowerCase()) : undefined;
++        };
+         for (const block of Array.from(content.querySelectorAll(codeBlockSelector))) {
+           if (block.parentElement?.closest(codeBlockSelector)) continue;
+           const codes = block.querySelectorAll("code");
+           let code: Node;
+           if (codes.length === 1) {
+-            code = codes[0]!.cloneNode(true);
++            const original = codes[0]!;
++            const clone = original.cloneNode(true) as Element;
++            // Turndown reads a fence's language only from a language-* class on CODE. When
++            // CODE has none, ChatGPT may still declare it as data-language on the CODE, its
++            // PRE, or the code-block wrapper. The nearest declaration within this block
++            // decides, and an invalid one leaves the fence unlabelled rather than deferring
++            // to the toolbar. Without any declaration, only a known toolbar label can name it,
++            // and otherwise the fence stays unlabelled.
++            if (!/(?:^|\s)language-\S/.test(clone.getAttribute("class") ?? "")) {
++              let declared: string | undefined;
++              for (let node: Element | null = original; node && declared === undefined; node = node === block ? null : node.parentElement) {
++                const value = node.getAttribute("data-language")?.trim();
++                if (value) declared = value;
++              }
++              if (declared !== undefined) {
++                if (/^[A-Za-z0-9][A-Za-z0-9_+.#-]{0,31}$/.test(declared)) clone.classList.add(`language-${declared}`);
++              } else {
++                const labelled = toolbarLanguage(block, original);
++                if (labelled) clone.classList.add(`language-${labelled}`);
++              }
++            }
++            code = clone;
+           } else {
+             // Captured 2026-10-11 (#815): interactive code blocks use CodeMirror
+             // DIV lines instead of CODE/PRE. Read their language and logical lines,

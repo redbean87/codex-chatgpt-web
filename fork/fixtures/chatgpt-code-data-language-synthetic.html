@@ -1,0 +1,21 @@
+<!-- Synthetic, not captured: assistant code blocks whose language is declared only by
+     data-language (on CODE, on PRE, or on the code-block wrapper), plus the shapes that must
+     keep their current output. Each block keeps a localized toolbar that must not reach Markdown. -->
+<section id="turn" data-turn-key="response">
+  <div data-content-search-unit-key="response:assistant"><h4 data-conversation-role="assistant">ChatGPT said:</h4>
+  <div data-markdown-text-style="assistant-message">
+    <p data-start="0" data-end="10">Blocks</p>
+    <div data-start="12" data-end="100"><pre data-markdown-copy="code-block"><div>JSON<button>Copy</button></div><div class="overflow-auto p-2"><code data-markdown-copy-content="true" data-language="json">{"out_of_scope": ["a_b", "*x*"], "fence": "```"}</code></div></pre></div>
+    <p data-start="102" data-end="110">On pre</p>
+    <div data-start="112" data-end="200"><pre data-markdown-copy="code-block" data-language="yaml"><div>YAML<button>Copy</button></div><div class="overflow-auto p-2"><code>key_name: *anchor</code></div></pre></div>
+    <p data-start="202" data-end="210">On wrapper</p>
+    <div data-start="212" data-end="300"><div data-markdown-copy="code-block" data-language="sh"><div>sh<button>Copy</button></div><div class="overflow-auto p-2"><code>echo "$HOME_DIR"</code></div></div></div>
+    <p data-start="302" data-end="310">Class wins</p>
+    <div data-start="312" data-end="400"><pre data-markdown-copy="code-block" data-language="json"><div>Python<button>Copy</button></div><div class="overflow-auto p-2"><code class="language-python whitespace-pre" data-language="json">print(1)</code></div></pre></div>
+    <p data-start="402" data-end="410">Invalid</p>
+    <div data-start="412" data-end="500"><pre data-markdown-copy="code-block" data-language="json"><div>Code<button>Copy</button></div><div class="overflow-auto p-2"><code data-language="bad value">plain text</code></div></pre></div>
+    <p data-start="502" data-end="510">None</p>
+    <div data-start="512" data-end="600"><pre data-markdown-copy="code-block"><div>Code<button>Copy</button></div><div class="overflow-auto p-2"><code>no label</code></div></pre></div>
+    <p data-start="602" data-end="610">Done.</p>
+  </div></div>
+</section>

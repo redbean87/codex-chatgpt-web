@@ -132,9 +132,11 @@ describe("fork-sync check", () => {
   function mergedFork() {
     const { root, base } = makeRepo({ "src/server.ts": "line1\n", "package.json": "{}\n" });
     // The check runs the checkout's own fork-hook-check, so copy the real tool in.
-    for (const path of ["bin/fork-hook-check", "lib/hook-check.ts", "lib/hook-check-cli.ts", "lib/registry.ts", "lib/header-guard.ts"]) {
+    for (const path of ["bin/fork-hook-check", "lib/hook-check.ts", "lib/hook-check-cli.ts", "lib/header-guard.ts"]) {
       write(root, `fork/${path}`, readFileSync(join(import.meta.dir, "..", path), "utf8"));
     }
+    // The fixture has no hooks or patches of its own, so it gets an empty registry.
+    write(root, "fork/lib/registry.ts", "export const HOOKS = [];\nexport const PATCHES = [];\n");
     Bun.spawnSync(["chmod", "+x", join(root, "fork/bin/fork-hook-check")]);
     commitAll(root, "fork tools");
     return { root, base };
