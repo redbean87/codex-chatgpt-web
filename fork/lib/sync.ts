@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { PROJECT_HEADER_LITERAL, unexpectedHeaderReferences } from "./header-guard";
+import { PROJECT_HEADER_LITERAL, unexpectedCallSites, unexpectedHeaderReferences } from "./header-guard";
 import { HOOKS, PATCHES } from "./registry";
 
 export type Owner = "fork-owned" | "hook file" | "upstream";
@@ -124,11 +124,15 @@ export function check(options: CheckOptions): number {
 
   log("== routing header guard");
   const strays = unexpectedHeaderReferences(root);
+  const callSites = unexpectedCallSites(root);
+  for (const problem of callSites) log(`FAIL: ${problem}`);
+  if (callSites.length > 0) failed = true;
   if (strays.length > 0) {
     log(`FAIL: ${PROJECT_HEADER_LITERAL} is referenced outside fork/project-route.ts: ${strays.join(", ")}`);
     failed = true;
   } else {
     log(`ok: ${PROJECT_HEADER_LITERAL} is defined only in fork/project-route.ts`);
+    if (callSites.length === 0) log("ok: each registered routing hook has exactly one call site in src/");
   }
 
   const steps: CheckStep[] = [

@@ -19,6 +19,33 @@ Ownership boundary
 
 The registry of hooks and patches is fork/lib/registry.ts.
 
+Upstream files the fork touches, and why each touch is unavoidable:
+
+  src/server.ts
+    HK1-IMPORT  one import of fork/project-route.
+    HK1         one call, in responseRequest right after traceId is assigned and
+                before the cancelled-session check: forkRecordProjectRoute(
+                traceId, req.headers). The server is the only process that sees
+                the HTTP headers.
+  src/adapters/chatgpt-web/browser-worker.ts
+    HK2-IMPORT  one import of fork/project-route.
+    HK2-SIG     one trailing optional parameter, routeKey, on prepareChatSurface.
+    HK2         one block at the top of prepareChatSurface that asks the fork
+                module to open the turn's project page. It returns the verified
+                composer, or nothing, in which case upstream's own navigation and
+                assertNewChatPage run unchanged.
+    HK2-ARG-TURN, HK2-ARG-RETRY
+                the two turn-bound call sites (new-turn preparation and the
+                connector-catalog-stale retry) pass turn.traceId as routeKey.
+                Every other caller omits it and is untouched.
+  src/adapters/chatgpt-web/browser-worker.ts, optional patch
+    HK3         fork/patches/code-fence-language.patch, independent of routing.
+                See "Code-fence patch".
+
+Nothing else changes: not package.json, not the request schema, not
+src/chatgpt-session.ts (upstream's assertNewChatPage stays strict; the project
+page is checked by the fork's own assertSurface).
+
 
 Tools
 -----
@@ -64,9 +91,79 @@ Tests: `bun test ./fork/tests` (the repository's own `bun run test` runs only
 ./tests, and package.json is deliberately not edited).
 
 
+Project routing
+---------------
+
+Goal: a consultation about repository X opens its ChatGPT chat inside the
+ChatGPT project named X.
+
+  caller (Firstmate)   adds the header  x-fm-chatgpt-project: <repo name>  to its
+                       POST /v1/responses. The request body and endpoint are
+                       unchanged. No header means exactly upstream behaviour.
+  server (HK1)         validates the name (^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$) and
+                       writes <home>/fork-routes/<traceId>.json (mode 0600). The
+                       trace id is the one the adapter computes for the same turn
+                       (chatGptWebTraceId), so the server and the browser helper,
+                       which are separate processes, agree on the file name.
+                       Files older than 24 hours are pruned. Failures are logged
+                       with a [fork] prefix and never fail the request.
+  helper (HK2)         reads the route by turn.traceId, looks the exact,
+                       case-sensitive name up in the project map, validates the
+                       URL (^https://chatgpt\.com/g/g-p-[A-Za-z0-9-]+/project$) and
+                       navigates there instead of https://chatgpt.com/. The page
+                       must be on the configured origin and project path (a
+                       canonical <id>-<slug> form of a full 32-hex id is accepted),
+                       must not be a temporary chat, and must show the composer.
+
+Fallback, always before Send: no route, an unmapped name, an absent or broken map,
+or a navigation or surface failure (one retry, then give up) all continue with
+upstream's ordinary new-chat preparation. The first project-or-fallback decision
+per trace id is persisted and reused, so a retried preparation of the same turn
+cannot switch surfaces. Nothing here runs after Send, so a fallback can never
+replay a prompt or create a second conversation.
+
+Outcome: <home>/fork-routes/<traceId>.outcome.json holds {project, decision:
+"project"|"fallback", reason: "unmapped"|"navigation_failed", member?, at}. It
+never contains a project URL. `member` is diagnostic evidence only: whether the
+conversation URL reached after Send is inside the configured project. A mismatch
+never fails a consultation.
+
+Project map: a flat JSON object, name -> project URL, read from the first of
+$FORK_PROJECTS_CONFIG, <home>/fork-projects.json, or fork/config/projects.local.json
+(source checkouts). fork/config/projects.example.json shows the shape with
+placeholder ids. <home> is $CODEX_CHATGPT_WEB_HOME or ~/.codex-chatgpt-web. The
+browser helper is a bundled process, so a deployment should use one of the first
+two locations.
+
+Unverified against live ChatGPT (an isolated acceptance test must settle these
+before the running install switches to the fork): that a project URL of this shape
+opens a page with the usual composer; that the first Send from it creates a
+conversation inside the project (the `member` field records this); and that a
+renamed or deleted project behaves as the fallback expects. If the observed URL
+shape differs, change PROJECT_URL_PATTERN in fork/project-route.ts only.
+
+Everything above is exercised by `bun test ./fork/tests` with fake pages, an
+in-memory filesystem, and a loopback bridge on an ephemeral port; ChatGPT and the
+running bridge are never contacted.
+
+
+Code-fence patch (HK3)
+----------------------
+
+fork/patches/code-fence-language.patch keeps assistant-reply code fences labelled
+(```json rather than a bare ```) when ChatGPT declares the language only as
+data-language or as a single known toolbar label. Firstmate's plan validator
+rejects an unlabelled fence. It is a separate delta from routing: it is applied in
+its own commit, fork-hook-check verifies it as applied or cleanly applicable, and
+it appears in no routing hook. Its regression tests and the three fixtures they
+need live in fork/tests/code-fence-language.test.ts and fork/fixtures/; without the
+patch applied those tests skip.
+
+
 Private configuration
 ---------------------
 
 fork/.gitignore keeps fork/config/projects.local.json (and any other
 fork/config/*.local.json) out of git. The fork repository is public, so real
-ChatGPT project URLs never go in a tracked file.
+ChatGPT project URLs never go in a tracked file. fork/tests/privacy.test.ts fails
+if a configured URL or a user-specific absolute path reaches a publishable file.

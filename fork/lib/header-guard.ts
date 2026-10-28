@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 // Built from two pieces so this guard does not flag its own source.
@@ -37,4 +37,26 @@ export function unexpectedHeaderReferences(root: string): string[] {
     .filter(file => !HEADER_ALLOWED.has(file))
     .filter(file => /\.(ts|tsx|js|cjs|mjs|json|sh|block|patch)$/.test(file) || !file.includes("."))
     .filter(file => readFileSync(join(root, file), "utf8").includes(PROJECT_HEADER_LITERAL));
+}
+
+/** Calls into the fork module from upstream source; each hook has exactly one. */
+export const ROUTING_CALL_SITES: Array<{ call: string; hook: string; block: string }> = [
+  { call: "forkRecordProjectRoute(", hook: "HK1", block: "hk1-server.block" },
+  { call: "forkPrepareProjectSurface(", hook: "HK2", block: "hk2-body.block" },
+];
+
+/** Registered hooks (those with a canonical block) whose call site count in src/ is not exactly one; unregistered ones must have none. */
+export function unexpectedCallSites(root: string): string[] {
+  const files: string[] = [];
+  try {
+    walk(root, "src", files);
+  } catch {
+    return ROUTING_CALL_SITES.map(site => `${site.hook}: src/ is missing`);
+  }
+  const text = files.filter(file => file.endsWith(".ts")).map(file => readFileSync(join(root, file), "utf8"));
+  return ROUTING_CALL_SITES.flatMap(site => {
+    const count = text.reduce((total, content) => total + content.split(site.call).length - 1, 0);
+    const expected = existsSync(join(root, "fork", "hooks", site.block)) ? 1 : 0;
+    return count === expected ? [] : [`${site.hook}: ${count} call sites of ${site.call.slice(0, -1)} in src/ (expected ${expected})`];
+  });
 }
