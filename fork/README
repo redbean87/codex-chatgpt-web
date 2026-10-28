@@ -1,0 +1,72 @@
+Codex Web GPT fork layer
+========================
+
+This directory holds everything redbean87/codex-chatgpt-web adds on top of
+upstream (https://github.com/miuuyy/codex-chatgpt-web). Upstream code stays
+byte-identical except for the registered hook blocks and patches below. This
+file is plain text with no extension on purpose, mirroring the Firstmate fork.
+
+
+Ownership boundary
+------------------
+
+  fork-owned    everything under fork/.
+  hook file     an upstream file that carries registered hook blocks or a
+                registered patch. Canonical copies of the blocks are
+                fork/hooks/*.block; patches are fork/patches/*.patch. They are
+                the only fork edits to upstream files.
+  upstream      every other file. The fork never edits these.
+
+The registry of hooks and patches is fork/lib/registry.ts.
+
+
+Tools
+-----
+
+  fork/bin/fork-hook-check [--root <repo>] [--base <upstream-ref>]
+      Proves the integration points are present, unmodified, and at their
+      lifecycle positions. For every registered hook: exactly one begin and
+      one end marker line in its file, enclosed text byte-identical to the
+      canonical block, the block at its anchor, and the upstream names it uses
+      still defined. For every registered patch: fully applied or cleanly
+      applicable, never partial. No other src/ file may reference the fork.
+      With --base, `git diff <ref>` outside fork/ may touch only the hook and
+      patch files, and only by adding exactly the registered blocks (plus the
+      patch hunks when a patch is applied). Prints one `ok:` or `FAIL:` line
+      per check and exits 1 if any fails.
+
+  fork/bin/fork-sync prepare <upstream-commit> [--from <branch>] [--worktree <dir>]
+      Needs the commit already fetched (run `git fetch --no-tags upstream`
+      yourself; the script never contacts a remote). Records <branch> (default
+      main) as refs/backup/<branch>-pre-sync-<short>, creates branch
+      fork/sync-<short> in a NEW worktree and merges the commit there with
+      --no-ff. The active checkout, its branch, and its working tree are never
+      touched. On conflicts the merge is left in progress in the worktree and
+      every conflicted path is listed with its owner:
+        fork-owned  upstream now writes a path the fork owns; stop and decide.
+        hook file   take upstream's side, then re-insert the blocks from
+                    fork/hooks/ and re-apply fork/patches/.
+        upstream    the fork edited an upstream file outside its hooks: a
+                    boundary violation; remove that edit.
+      Exit 0 merged cleanly, 3 conflicts, 1 or 2 refused.
+
+  fork/bin/fork-sync check <upstream-commit> [--root <dir>] [--from <branch>]
+      In <root> (default this checkout): the boundary check with
+      --base <upstream-commit>, a guard that the routing header name is defined
+      in exactly one production file, the fork typecheck, `bun run verify`,
+      `bun test ./fork/tests`, then the commits the import brings and the
+      upstream-owned diffstat, for review. Exit 0 only if everything passes.
+
+Nothing here pushes, fast-forwards, deletes a branch or worktree, aborts a
+merge, or resolves a conflict; those steps stay manual.
+
+Tests: `bun test ./fork/tests` (the repository's own `bun run test` runs only
+./tests, and package.json is deliberately not edited).
+
+
+Private configuration
+---------------------
+
+fork/.gitignore keeps fork/config/projects.local.json (and any other
+fork/config/*.local.json) out of git. The fork repository is public, so real
+ChatGPT project URLs never go in a tracked file.

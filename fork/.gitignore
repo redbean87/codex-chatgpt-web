@@ -1,0 +1,3 @@
+# Owner-supplied ChatGPT project URLs are private; only projects.example.json is committed.
+config/projects.local.json
+config/*.local.json

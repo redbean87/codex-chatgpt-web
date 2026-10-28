@@ -1,0 +1,6 @@
+#!/usr/bin/env bun
+// Boundary check for the fork's upstream integration points; see fork/README.
+import { dirname, resolve } from "node:path";
+import { runHookCheck } from "../lib/hook-check-cli";
+
+process.exit(runHookCheck(process.argv.slice(2), { root: resolve(dirname(Bun.main), "..", "..") }));
