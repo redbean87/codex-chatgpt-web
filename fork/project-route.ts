@@ -78,7 +78,8 @@ export function defaultDeps(): RouteDeps {
       const override = process.env.FORK_PROJECTS_CONFIG?.trim();
       if (override) paths.push(resolve(override));
       paths.push(join(homeDirectory(), "fork-projects.json"));
-      // Source checkouts keep the owner's map next to the example; bundled helpers have no such dir.
+      // Source checkouts keep the owner's map next to the example. Bun inlines this directory when it
+      // bundles the browser helper, so a helper built from a checkout reads that checkout's map.
       if (typeof import.meta.dir === "string") paths.push(join(import.meta.dir, "config", "projects.local.json"));
       return paths;
     },

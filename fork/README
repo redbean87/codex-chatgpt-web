@@ -132,8 +132,10 @@ Project map: a flat JSON object, name -> project URL, read from the first of
 $FORK_PROJECTS_CONFIG, <home>/fork-projects.json, or fork/config/projects.local.json
 (source checkouts). fork/config/projects.example.json shows the shape with
 placeholder ids. <home> is $CODEX_CHATGPT_WEB_HOME or ~/.codex-chatgpt-web. The
-browser helper is a bundled process, so a deployment should use one of the first
-two locations.
+browser helper is a bundled process: Bun inlines the source directory of
+project-route.ts into the bundle, so a helper built from a checkout also reads that
+checkout's fork/config/projects.local.json. A map outside the checkout (the first
+two locations) survives a rebuild from elsewhere.
 
 Unverified against live ChatGPT (an isolated acceptance test must settle these
 before the running install switches to the fork): that a project URL of this shape
