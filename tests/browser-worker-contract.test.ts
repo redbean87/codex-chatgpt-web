@@ -11,7 +11,8 @@ import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
-import { CHATGPT_SEND_BUTTON_SELECTOR, CHATGPT_THINK_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
+import { CHATGPT_SEND_BUTTON_SELECTOR, CHATGPT_THINK_BUTTON_SELECTOR } from "../src/chatgpt-ui/composer";
+import { parseChatGptEffortSliderState } from "../src/chatgpt-ui/model-picker";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
@@ -524,12 +525,26 @@ test("chat preparation preserves page-read and composer errors instead of report
   }).prepareChatSurface;
   for (const error of [new ChatGptBrowserObservationTimeoutError(5_000), new Error("ChatGPT composer is unavailable")]) {
     const page = { url: () => "https://chatgpt.com/" };
-    await expect(prepare.call({ activeComposer: async () => { throw error; } }, page)).rejects.toBe(error);
+    await expect(prepare.call({ config: { useTemporaryChats: false }, activeComposer: async () => { throw error; } }, page)).rejects.toBe(error);
+  }
+});
+
+test("missing connectors in Temporary Chat explain how to return to ordinary chats", async () => {
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  for (const useTemporaryChats of [false, true]) {
+    worker.config = { useTemporaryChats, appName: "Codex Native2 DEV" };
+    for (const titles of [[], ["Another connector"]]) {
+      worker.connectorMentionRowTitles = async () => titles;
+      const message = await worker.connectorMentionFailure({}, 1);
+      expect(message.includes("turn off Settings → Temporary Chat")).toBe(useTemporaryChats);
+      expect(message).toContain(titles.length ? "no row named" : "menu did not open");
+    }
   }
 });
 
 test("cancelled chat preparation stops navigation and composer polling", async () => {
   const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  worker.config = { useTemporaryChats: false };
   for (const stage of ["before-navigation", "navigation", "composer"]) {
     const controller = new AbortController();
     let navigations = 0;
@@ -2337,19 +2352,20 @@ test("image attachment readiness uses exact file tiles and not localized remove-
 
 test("effort slider ARIA state fails closed on malformed and unsupported ranges", () => {
   expect(parseChatGptEffortSliderState("0", "4", "3")).toEqual({ min: 0, max: 4, value: 3 });
+  expect(parseChatGptEffortSliderState("0", "5", "4")).toEqual({ min: 0, max: 5, value: 4 });
   for (const attributes of [
     [null, "4", "3"],
     ["", "4", "3"],
     ["0", "4", null],
     ["0", "4", "9"],
-    ["0", "5", "3"],
+    ["0", "6", "3"],
     ["9007199254740992", "9007199254740993", "9007199254740992"],
   ] as const) {
     expect(parseChatGptEffortSliderState(attributes[0], attributes[1], attributes[2])).toBeUndefined();
   }
 });
 
-test("Luna-only browser turns verify selector absence instead of opening an effort menu", async () => {
+test("Luna-only browser turns verify the inactive Think control without opening an effort menu", async () => {
   const checkpoints: string[] = [];
   const hiddenDialog = {
     filter() { return this; },
@@ -2357,10 +2373,13 @@ test("Luna-only browser turns verify selector absence instead of opening an effo
     isVisible: async () => false,
   };
   const visibleControls = { count: async () => 0 };
-  const thinkControls = { or() { return this; }, filter: () => visibleControls };
+  const thinkControls = {
+    or() { return this; }, filter() { return this; }, count: async () => 1,
+    first: () => ({ getAttribute: async () => "false" }),
+  };
   const composerForm = {
-    locator: () => thinkControls,
-    getByRole: () => ({ filter: () => ({ count: async () => 0 }) }),
+    locator: (selector: string) => selector === CHATGPT_THINK_BUTTON_SELECTOR ? thinkControls : { filter: () => visibleControls },
+    getByRole: () => thinkControls,
   };
   const composer = { locator: () => composerForm };
   const selectModelAndEffort = (ChatGptBrowserWorker.prototype as unknown as {
@@ -2384,7 +2403,7 @@ test("Luna-only browser turns verify selector absence instead of opening an effo
   }, async checkpoint => { checkpoints.push(checkpoint); });
 
   expect(mode).toMatchObject({ displayLabel: "Luna", uiEffortIndex: null });
-  expect(checkpoints).toEqual(["luna-default-confirmed"]);
+  expect(checkpoints).toEqual(["think-disabled"]);
 });
 
 function thinkButtonFixture() {
@@ -2450,6 +2469,17 @@ test("missing, ambiguous or unverified Think buttons never type or submit a comm
     }[scenario]);
     expect(ui.state).toEqual(before);
   }
+});
+
+test("Luna Low cannot treat an unrecognized model control as Think already disabled", async () => {
+  const ui = thinkButtonFixture();
+  ui.state.controlCount = 0;
+  const checkpoints: string[] = [];
+  await expect(setChatGptThinkMode(ui.composer as never, false,
+    async checkpoint => { checkpoints.push(checkpoint); })).rejects.toThrow("Think button is unavailable");
+  expect(checkpoints).toEqual([]);
+  expect(ui.state.clicks).toBe(0);
+  expect(ui.state.commands).toEqual([]);
 });
 
 test("Think waits for its button to mount without typing a command", async () => {
@@ -4152,6 +4182,7 @@ test("the daemon prefers the browser helper that shipped beside its own entrypoi
 
 test("multipart observation surfaces Stopped thinking on its first observation even with live MCP work", async () => {
   const absent = { last() { return this; }, filter() { return this; }, isVisible: async () => false,
+    evaluateAll: async () => false,
     getByText() { return this; }, getByTestId() { return this; } };
   const page = { isClosed: () => false, locator: () => absent };
   const binding = { identity: "group:assistant:current", locator: absent };
