@@ -32,6 +32,14 @@ function callSiteAnchor(stage: string, maxDistance: number): (context: AnchorCon
   };
 }
 
+/**
+ * Upstream's new-chat target, named by a constant before 6.1.15 and by chatGptNewChatUrl() after it
+ * (upstream gained opt-in temporary chats). Both forms name the same ordinary new-chat surface.
+ */
+const TARGET_URL_ASSIGNMENT = /const targetUrl = (?:CHATGPT_NEW_CHAT_URL|chatGptNewChatUrl\()/;
+/** Upstream's new-chat assertion, which gained a temporary-chat argument in 6.1.15. */
+const NEW_CHAT_ASSERTION = /await assertNewChatPage\(page(?:, this\.config\.useTemporaryChats)?\);/;
+
 /** Every upstream integration point the fork owns. fork/README explains each one. */
 export const HOOKS: HookSpec[] = [
   {
@@ -94,9 +102,9 @@ export const HOOKS: HookSpec[] = [
       const declaration = lastMatch(lines, begin, /^\s*private async prepareChatSurface\($/);
       if (declaration === -1 || begin - declaration > 14) return "block must sit at the top of prepareChatSurface";
       if (previous?.trim() !== "throwIfPromptAttachmentAborted(abortSignal);") return "block must follow the abort check that opens prepareChatSurface";
-      const target = lines.findIndex((line, index) => index > end && /const targetUrl = CHATGPT_NEW_CHAT_URL;/.test(line));
+      const target = lines.findIndex((line, index) => index > end && TARGET_URL_ASSIGNMENT.test(line));
       if (target === -1 || target - end > 12) return "block must come before upstream's targetUrl assignment";
-      const navigation = lines.findIndex((line, index) => index > end && /await assertNewChatPage\(page\);/.test(line));
+      const navigation = lines.findIndex((line, index) => index > end && NEW_CHAT_ASSERTION.test(line));
       if (navigation === -1 || navigation - end > 30) return "upstream's assertNewChatPage call must still follow the block";
       if (!/Launcher verification refreshes/.test(next ?? "")) return "block must precede upstream's navigation comment";
       return undefined;
@@ -106,7 +114,7 @@ export const HOOKS: HookSpec[] = [
       { pattern: /^export async function throwIfChatGptSessionFailureAlert\(/, description: "throwIfChatGptSessionFailureAlert" },
       { pattern: /^\s*assertAuthenticatedChatGptPage,?$/, description: "assertAuthenticatedChatGptPage import" },
       { pattern: /^\s*private async activeComposer\($/, description: "activeComposer" },
-      { pattern: /await assertNewChatPage\(page\);/, description: "upstream assertNewChatPage call" },
+      { pattern: NEW_CHAT_ASSERTION, description: "upstream assertNewChatPage call" },
     ],
   },
   {

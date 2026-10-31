@@ -7,6 +7,7 @@ import { PROJECT_HEADER, readOutcome, recordRoute } from "../project-route";
 import { PROJECT_URL, headers } from "./route-helpers";
 
 const ORDINARY = "https://chatgpt.com/";
+const TEMPORARY = "https://chatgpt.com/?temporary-chat=true";
 
 let home: string;
 const saved: Record<string, string | undefined> = {};
@@ -65,10 +66,14 @@ function pageStub(options: { gotoFailuresFor?: Record<string, number>; landOn?: 
   return { stub, page, composer };
 }
 
-async function prepare(page: unknown, routeKey?: string) {
+async function prepare(page: unknown, routeKey?: string, useTemporaryChats = false) {
   const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    // Upstream 6.1.15 gated the ordinary new-chat surface on this config field; the real worker
+    // always carries it (resolveBrowserConfig), so the seam stub must too.
+    config: { useTemporaryChats: boolean };
     prepareChatSurface(page: unknown, capture?: (checkpoint: string) => Promise<void>, signal?: AbortSignal, routeKey?: string): Promise<unknown>;
   };
+  worker.config = { useTemporaryChats };
   return worker.prepareChatSurface(page, undefined, undefined, routeKey);
 }
 
@@ -144,6 +149,21 @@ describe("HK2 inside prepareChatSurface", () => {
       expect(stub.gotos.at(-1)).toBe(ORDINARY);
       expect(readOutcome(trace)?.reason).toBe("navigation_failed");
     }
+  });
+
+  test("upstream's temporary-chat default still opens the project page and falls back to the temporary chat", async () => {
+    const routed = nextTrace();
+    route(routed);
+    const project = pageStub();
+    expect(await prepare(project.page, routed, true)).toBe(project.composer);
+    expect(project.stub.gotos).toEqual([PROJECT_URL]);
+    expect(readOutcome(routed)).toMatchObject({ decision: "project" });
+    const unmapped = nextTrace();
+    route(unmapped, "not-configured");
+    const fallback = pageStub();
+    expect(await prepare(fallback.page, unmapped, true)).toBe(fallback.composer);
+    expect(fallback.stub.gotos).toEqual([TEMPORARY]);
+    expect(readOutcome(unmapped)).toMatchObject({ decision: "fallback", reason: "unmapped" });
   });
 
   test("a repeated preparation of the same turn keeps the surface it started with", async () => {
