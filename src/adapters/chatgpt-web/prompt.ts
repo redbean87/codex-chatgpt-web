@@ -3,8 +3,10 @@ import { CHATGPT_CONNECTOR_NAME, ZERO_RISK_CHATGPT_CONNECTOR_NAME } from "../../
 import { selectedSkillFile, skillFileTokens, type ChatGptSkillFile } from "./skill-attachments";
 import {
   CHATGPT_WEB_GPT6_INSTANT_BIGGER_CONTEXT_ERROR,
+  CHATGPT_WEB_PLATFORM_RESERVE_TOKENS,
   chatGptWebImageTokenReserve,
   isChatGptWebZeroRiskBackendModel,
+  resolveChatGptWebContextLimits,
   resolveChatGptWebMessageTokenBudget,
   resolveChatGptWebStagingTokenBudget,
   resolveChatGptWebTransportLimits,
@@ -13,6 +15,7 @@ import {
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { restoreCompactionTaskMessages } from "./compaction-continuation";
 import { chatGptTurnUserRevisionHistory, extractChatGptTurnIdentity } from "./environment";
+import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
@@ -658,6 +661,7 @@ export function compileChatGptWebPrompt(
       "The task context is complete. Execute the latest active user request now under the capability contract above.",
       "</codex_transport_resume>",
     ];
+  const backendModel = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID ? CHATGPT_WEB_LUNA_MODEL_ID : CHATGPT_WEB_MODEL_ID;
   const build = (sourceMessages: readonly CodexMessage[], omittedMessages = 0): CompiledChatGptWebPrompt => {
     const images: ChatGptWebPromptImage[] = [];
     const budget: ImageBudget = {
@@ -686,6 +690,15 @@ export function compileChatGptWebPrompt(
     const answerContract = captureLunaCheckpoint
       ? "Return the complete answer that the outer Codex task should receive, then the required private checkpoint tail."
       : "Return only the answer that the outer Codex task should receive.";
+    const resume = omittedMessages > 0 ? [
+      "<codex_transport_resume>",
+      `${omittedMessages} earlier history items were omitted to fit this compaction request; the supplied history is incomplete.`,
+      "Preserve still-relevant progress, constraints and pending work from any supplied cumulative checkpoint and the remaining evidence. Do not infer that omitted work was never done or invent missing details.",
+      manualControl
+        ? "Produce the requested checkpoint summary now."
+        : "Produce the requested checkpoint summary now without calling tools.",
+      "</codex_transport_resume>",
+    ] : transportResume;
     if (multipartEnabled) {
       const records: MultipartContextRecord[] = [
         ...system.map((content, system_index) => ({ kind: "system" as const, system_index, content })),
@@ -708,7 +721,7 @@ export function compileChatGptWebPrompt(
           ...manualControlContract,
           ...checkpointContract,
           answerContract,
-          ...transportResume,
+          ...resume,
         ].join("\n"),
       };
       const imageTokens = images.reduce((sum, image) => sum + chatGptWebImageTokenReserve(image.detail), 0);
@@ -717,7 +730,6 @@ export function compileChatGptWebPrompt(
       // Equal parts near Instant's maximum can be accepted once and rejected on the next Send.
       // If complete records cannot fit that allocation, plan with the wider available stage mode
       // before submitting anything; no context is truncated and no failed upload is replayed.
-      const backendModel = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID ? CHATGPT_WEB_LUNA_MODEL_ID : CHATGPT_WEB_MODEL_ID;
       const stagingEfforts = backendModel === CHATGPT_WEB_LUNA_MODEL_ID ? ["low"] as const
         : capabilities.proAvailable ? ["max"] as const : ["low", "medium"] as const;
       const emptyParts = multipart.parts;
@@ -771,15 +783,7 @@ export function compileChatGptWebPrompt(
       envelopeJson,
       "</codex_context_json>",
       "```",
-      ...(omittedMessages > 0 ? [
-        "<codex_transport_resume>",
-        `${omittedMessages} earlier history items were omitted to fit this compaction request; the supplied history is incomplete.`,
-        "Preserve still-relevant progress, constraints and pending work from any supplied cumulative checkpoint and the remaining evidence. Do not infer that omitted work was never done or invent missing details.",
-        manualControl
-          ? "Produce the requested checkpoint summary now."
-          : "Produce the requested checkpoint summary now without calling tools.",
-        "</codex_transport_resume>",
-      ] : transportResume),
+      ...resume,
     ].join("\n");
     return { text, images, ...attachments };
   };
@@ -791,16 +795,19 @@ export function compileChatGptWebPrompt(
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest) return compiled;
 
-  // The 110k edge budget was measured for the old single-message compaction envelope. Bigger
-  // Context stages are governed by the same model-specific per-message token and composer limits
-  // as ordinary multipart turns in browser-worker. Applying the legacy byte cap here silently
-  // discarded context that the staged transport can carry; preserve it and let browser preflight
-  // fail explicitly if any atomic record is genuinely too large for one stage.
-  if (compiled.multipart) return compiled;
-
-  const exceedsCompactionBudget = (): boolean => (
-    chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET
-  );
+  // Match browser-worker's exclusive transaction ceiling, including wrappers, acknowledgements,
+  // attachments and the platform reserve. The legacy inline byte cap does not apply to multipart.
+  // Individual records remain atomic; browser preflight still rejects any part that cannot fit.
+  const multipartTokenBudget = compiled.multipart ? Math.min(
+    resolveChatGptWebContextLimits(
+      backendModel, mode.effort, { ...capabilities, experimentalBiggerContext: true }, parsed._chatgptModelFamily,
+    ).contextWindow,
+    (resolveChatGptWebMessageTokenBudget(backendModel, mode.effort, capabilities)
+      + CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + 1) * compiled.multipart.parts.length,
+  ) : undefined;
+  const exceedsCompactionBudget = (): boolean => compiled.multipart
+    ? estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) >= multipartTokenBudget!
+    : chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET;
 
   // A cumulative checkpoint may be the only remaining account of earlier work. Preserve the
   // newest one and the final compaction instruction; trim other history in its original order.
@@ -812,11 +819,18 @@ export function compileChatGptWebPrompt(
     if (discardIndex === sourceMessages.length - 1) break;
     sourceMessages.splice(discardIndex, 1);
     if (checkpointIndex > discardIndex) checkpointIndex -= 1;
-    // Rebuild image references and count the omission notice inside the same byte budget.
+    // Rebuild attachments and count the omission notice inside the same transport budget.
     compiled = build(sourceMessages, initialMessageCount - sourceMessages.length);
   }
-  const encodedBytes = chatGptPromptJsonBytes(compiled.text);
   if (exceedsCompactionBudget()) {
+    if (compiled.multipart) {
+      const inputTokens = estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId);
+      throw new ChatGptWebAdapterError(
+        `ChatGPT Web compaction still requires ${inputTokens.toLocaleString("en-US")} input tokens after other history was trimmed; the required system context, ${checkpointIndex >= 0 ? "cumulative checkpoint, and " : ""}final compaction instruction cannot fit below the ${multipartTokenBudget!.toLocaleString("en-US")}-token ${compiled.multipart.parts.length === 2 ? "two-part" : "six-part"} ceiling. Reduce the required context before retrying.`,
+        { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+      );
+    }
+    const encodedBytes = chatGptPromptJsonBytes(compiled.text);
     throw new Error(
       `ChatGPT Web compaction prompt still requires ${encodedBytes.toLocaleString("en-US")} JSON bytes after other history was trimmed; ${checkpointIndex >= 0 ? "the cumulative checkpoint and final compaction instruction exceed" : "the final compaction instruction alone exceeds"} the browser compaction budget`,
     );

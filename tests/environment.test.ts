@@ -1219,6 +1219,87 @@ describe("trusted Codex task environment continuity", () => {
     return { ...fixture, request: parseRequest({ ...body, model: "chatgpt-web/high" }), environment, roots, nativeContext, writeContext };
   }
 
+  function worktreeRolloutFixture() {
+    const fixture = resumedRootFixture();
+    const roots = [join(fixture.codexHome, "project"), join(fixture.codexHome, "visualizations")];
+    const request = environmentlessChild();
+    const body = request._rawBody as { client_metadata: Record<string, string>; input: Array<Record<string, unknown>> };
+    const metadata = JSON.parse(body.client_metadata["x-codex-turn-metadata"]!);
+    body.client_metadata["x-codex-turn-metadata"] = JSON.stringify({ ...metadata, agent_name: "/root" });
+    const envelope = {
+      type: "message", role: "user", id: "msg_worktree_environment",
+      internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId },
+      content: [{ type: "input_text", text: `<environment_context><cwd>${root}</cwd><filesystem><workspace_roots>${roots.map(path => `<root>${path}</root>`).join("")}</workspace_roots>${dangerFullAccessProfileXml}</filesystem></environment_context>` }],
+    };
+    body.input.unshift(envelope);
+    // Captured Codex Desktop 0.164 V1 shape: the worktree cwd is current, project
+    // roots are retained in session_meta, and the turn explicitly has Full Access.
+    const session = childSessionMeta();
+    const sessionPayload = session.payload as Record<string, any>;
+    delete sessionPayload.agent_path;
+    sessionPayload.source.subagent.thread_spawn.agent_path = null;
+    sessionPayload.runtime_workspace_roots = roots;
+    const context = childTurnContext();
+    delete (context.payload as Record<string, unknown>).workspace_roots;
+    const writeContext = () => writeFileSync(fixture.rolloutPath,
+      [session, context].map(value => JSON.stringify(value)).join("\n") + "\n");
+    writeContext();
+    return { ...fixture, request, roots, envelope, sessionPayload, context, writeContext };
+  }
+
+  test("Full Access worktree cwd uses its current native session's project roots", () => {
+    const { request, codexHome, roots } = worktreeRolloutFixture();
+    expect(() => extractChatGptTurnEnvironment(request)).toThrow();
+    const state = join(codexHome, "thread-environments.json");
+    const expected = { cwd: root, roots, writableRoots: roots, sandboxPolicy: { type: "dangerFullAccess" as const }, tools: [] };
+    expect(new ChatGptThreadEnvironmentStore(state, Date.now, codexHome).resolve(request)).toEqual(expected);
+    expect(new ChatGptThreadEnvironmentStore(state, Date.now, codexHome).resolve(request)).toEqual(expected);
+  });
+
+  test("worktree context cannot replace native cwd, project roots, lineage, or the current turn", () => {
+    for (const conflict of ["cwd", "roots", "parent", "turn", "missing-roots", "malformed-roots", "restricted-profile", "split-policy"] as const) {
+      const fixture = worktreeRolloutFixture();
+      const payload = fixture.context.payload as Record<string, unknown>;
+      if (conflict === "cwd") payload.cwd = join(root, "different-worktree");
+      if (conflict === "roots") fixture.sessionPayload.runtime_workspace_roots = [join(fixture.codexHome, "different-project")];
+      if (conflict === "parent") fixture.sessionPayload.parent_thread_id = "01a06c66-ffff-75c6-a0df-318f890ef6de";
+      if (conflict === "turn") payload.turn_id = "01a06c66-ffff-75c6-a0df-318f890ef6de";
+      if (conflict === "missing-roots") delete fixture.sessionPayload.runtime_workspace_roots;
+      if (conflict === "malformed-roots") fixture.sessionPayload.runtime_workspace_roots = ["relative-project"];
+      if (conflict === "restricted-profile") payload.permission_profile = { type: "managed" };
+      if (conflict === "split-policy") payload.file_system_sandbox_policy = { kind: "restricted", entries: [] };
+      fixture.writeContext();
+      expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, fixture.codexHome).resolve(fixture.request)).toThrow();
+    }
+  });
+
+  test("current turn roots override the worktree session's original roots", () => {
+    const fixture = worktreeRolloutFixture();
+    (fixture.context.payload as Record<string, unknown>).workspace_roots = fixture.roots;
+    fixture.sessionPayload.runtime_workspace_roots = [join(fixture.codexHome, "previous-project")];
+    fixture.writeContext();
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, fixture.codexHome).resolve(fixture.request))
+      .toMatchObject({ cwd: root, roots: fixture.roots });
+  });
+
+  test("worktree context cannot borrow cached Full Access when current native evidence is absent", () => {
+    const { request, codexHome, rolloutPath } = worktreeRolloutFixture();
+    const state = join(codexHome, "thread-environments.json");
+    expect(new ChatGptThreadEnvironmentStore(state, Date.now, codexHome).resolve(request).cwd).toBe(root);
+    rmSync(rolloutPath);
+    expect(() => new ChatGptThreadEnvironmentStore(state, Date.now, codexHome).resolve(request)).toThrow();
+  });
+
+  test("an outside-root worktree does not widen restricted permissions", () => {
+    const { request, codexHome, envelope, context, writeContext } = worktreeRolloutFixture();
+    envelope.content[0]!.text = envelope.content[0]!.text.replace(dangerFullAccessProfileXml, readOnlyProfileXml);
+    const payload = context.payload as Record<string, unknown>;
+    payload.permission_profile = { type: "managed" };
+    payload.sandbox_policy = { type: "read-only", network_access: false };
+    writeContext();
+    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request)).toThrow();
+  });
+
   test.each([true, false])("cwd-less workspace update uses the current rollout cwd, not the first root; attributed=%s (#894)", attributed => {
     const { codexHome, request, roots } = cwdlessRolloutFixture("workspace-write", attributed);
     const writableRoots = [root, ...roots.filter(path => path !== root)];
@@ -1826,6 +1907,11 @@ describe("trusted Codex task environment continuity", () => {
     expect(resolved).toThrow("Steering environment conflicts");
     environment.content[1]!.text = unstated;
     expect(resolved().sandboxPolicy).toMatchObject({ networkAccess: false });
+    environment.content[1]!.text = unstated.replace(
+      "</workspace_roots>", `<root>${join(codexHome, "unproven-output")}</root></workspace_roots>`,
+    );
+    expect(resolved).toThrow("workspace_roots");
+    environment.content[1]!.text = unstated;
     // Unstated permissions require current evidence, even when a cache already exists.
     rmSync(rolloutPath);
     expect(() => store.resolve(beforeSteering)).toThrow("missing network access");
@@ -2184,10 +2270,10 @@ describe("trusted Codex task environment continuity", () => {
       expect(resolveCurrent).toThrow("environment conflicts");
     }
     environmentPart.text = currentEnvironment;
-    // An explicitly declared root set must still match, even with full access.
-    payload.workspace_roots = [root];
+    // A current envelope cannot omit an explicitly declared native project.
+    payload.workspace_roots = [root, auxiliary, join(codexHome, "missing-project")];
     writeContext();
-    expect(resolveCurrent).toThrow("workspace_roots, writable_roots");
+    expect(resolveCurrent).toThrow("workspace_roots");
     payload.workspace_roots = null;
     writeContext();
     expect(resolveCurrent).toThrow();
@@ -2195,6 +2281,82 @@ describe("trusted Codex task environment continuity", () => {
     payload.turn_id = oldTurnId;
     writeContext();
     expect(resolveCurrent).toThrow("current turn");
+  });
+
+  for (const shared of [false, true]) for (const format of ["v1", "v2"])
+  for (const rootSource of ["session", "turn"]) test(`${format} full-access compaction keeps declared ${rootSource} projects when Codex adds an output root (#933, shared=${shared})`, () => {
+    const { codexHome, request, rolloutPath } = resumedRootFixture();
+    const bridgeHome = shared ? mkdtempSync(join(tmpdir(), "codex-shared-added-root-")) : codexHome;
+    if (shared) temporaryRoots.push(bridgeHome);
+    const body = request._rawBody as { input: Array<Record<string, unknown>>; client_metadata: Record<string, string> };
+    const oldTurnId = "01a06c66-0000-75c6-a0df-318f890ef6de";
+    body.input[0]!.internal_chat_message_metadata_passthrough = { turn_id: oldTurnId };
+    const summary = `Added workspace checkpoint ${format} ${rootSource} shared=${shared}`;
+    rememberCompactionContinuation({ ...request, _compactionRequest: true }, extractChatGptTurnIdentity(request), [
+      { turnId: oldTurnId, content: body.input[0]!.content },
+    ], summary);
+    const auxiliary = join(codexHome, "second-project");
+    const output = join(codexHome, "visualizations", "2026", "10", "22", rolloutThreadId);
+    const roots = [root, auxiliary];
+    const currentEnvironment = (claimedRoots: string[]) => environmentXml.replace(
+      /<workspace_roots>[\s\S]*?<\/workspace_roots>/,
+      `<workspace_roots>${claimedRoots.map(path => `<root>${path}</root>`).join("")}</workspace_roots>`,
+    );
+    // The native project order remains stable even when the current envelope adds
+    // a visualization directory first. No directory name grants special access.
+    const environmentPart = { type: "input_text", text: currentEnvironment([output, auxiliary, root]) };
+    body.input.unshift({
+      type: "message", role: "user", id: "msg_current_environment", content: [environmentPart],
+      internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId },
+    });
+    body.input.push(format === "v2"
+      ? { type: "compaction", encrypted_content: encodeCompactionSummary(summary) }
+      : { type: "message", role: "user", content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n${summary}` }] });
+    const metadata = JSON.parse(body.client_metadata["x-codex-turn-metadata"]!);
+    metadata.workspaces = Object.fromEntries(roots.map(path => [path, {}]));
+    body.client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
+    const session = { type: "session_meta", payload: {
+      id: rolloutThreadId, source: "vscode", ...(rootSource === "session" ? { runtime_workspace_roots: roots } : {}),
+    } };
+    const native = childTurnContext(rolloutTurnId, {
+      workspace_roots: rootSource === "turn" ? roots : undefined,
+    });
+    const payload = native.payload as Record<string, unknown>;
+    const writeContext = () => writeFileSync(rolloutPath,
+      [session, native].map(value => JSON.stringify(value)).join("\n") + "\n");
+    const state = join(bridgeHome, "thread-environments.json");
+    const resolveCurrent = () => new ChatGptThreadEnvironmentStore(
+      state, Date.now, bridgeHome, undefined, shared ? [codexHome] : [],
+    ).resolve(request);
+    writeContext();
+    const expected = {
+      cwd: root, roots: [...roots, output], writableRoots: [...roots, output],
+      sandboxPolicy: { type: "dangerFullAccess" as const }, tools: request.context.tools ?? [],
+    };
+    expect(resolveCurrent()).toEqual(expected);
+    expect(resolveCurrent()).toEqual(expected);
+
+    for (const claimed of [[root, output], [root, join(codexHome, "replacement-project"), output]]) {
+      environmentPart.text = currentEnvironment(claimed);
+      expect(resolveCurrent).toThrow("workspace_roots");
+    }
+    environmentPart.text = currentEnvironment([output, auxiliary, root]).replace(
+      `<cwd>${root}</cwd>`, `<cwd>${auxiliary}</cwd>`,
+    );
+    expect(resolveCurrent).toThrow("cwd");
+    environmentPart.text = currentEnvironment([output, auxiliary, root]).replace(
+      dangerFullAccessProfileXml, readOnlyProfileXml,
+    );
+    expect(resolveCurrent).toThrow("sandbox_policy");
+    environmentPart.text = currentEnvironment([output, auxiliary, root]);
+    payload.turn_id = oldTurnId;
+    writeContext();
+    expect(resolveCurrent).toThrow("current turn");
+    payload.turn_id = rolloutTurnId;
+    writeContext();
+    expect(resolveCurrent()).toEqual(expected);
+    rmSync(rolloutPath);
+    expect(resolveCurrent).toThrow();
   });
 
   test("compaction keeps current native output-directory grants omitted from workspace roots", () => {
@@ -2238,6 +2400,7 @@ describe("trusted Codex task environment continuity", () => {
     const original = environmentPart.text;
     for (const conflicting of [
       original.replaceAll(root, join(codexHome, "unproven-project")),
+      original.replace("</workspace_roots>", `<root>${join(codexHome, "unproven-output")}</root></workspace_roots>`),
       original.replace("<filesystem>", "<network_access>restricted</network_access><filesystem>"),
       filesystemEnvironmentXml(readOnlyProfileXml),
     ]) {
