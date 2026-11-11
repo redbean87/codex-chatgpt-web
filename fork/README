@@ -22,11 +22,18 @@ The registry of hooks and patches is fork/lib/registry.ts.
 Upstream files the fork touches, and why each touch is unavoidable:
 
   src/server.ts
-    HK1-IMPORT  one import of fork/project-route.
+    HK1-IMPORT  one import of fork/project-route (forkRecordProjectRoute and
+                forkUseBrowserHelper).
     HK1         one call, in responseRequest right after traceId is assigned and
                 before the cancelled-session check: forkRecordProjectRoute(
                 traceId, req.headers). The server is the only process that sees
                 the HTTP headers.
+    HK4         one call, in responseRequest directly after the provider is built
+                and before traceId is computed: forkUseBrowserHelper(provider,
+                req.headers). It names the fork-built browser helper on the
+                provider for launcher turns (see "Browser host"). It must come
+                before the trace id because the trace id hashes the whole
+                provider.chatgptWeb.
   src/adapters/chatgpt-web/browser-worker.ts
     HK2-IMPORT  one import of fork/project-route.
     HK2-SIG     one trailing optional parameter, routeKey, on prepareChatSurface.
@@ -92,6 +99,11 @@ Tools
       touches the network, a browser, launchd or the Codex configuration.
       Exit 1 when the host is wrong. See "Browser host" below.
 
+  fork/bin/fork-bridge-check build-helper [--output <file>]
+      Builds the fork browser helper described under "Browser host". Writes
+      atomically, keeps the previous helper if the build fails, and rejects a
+      bundle that does not contain the routing hook.
+
   fork/bin/fork-bridge-check use-launcher-host [--home <dir>] [--apply]
       Dry run unless --apply. Sets browserHost=launcher and
       browserHostDescriptorPath in config.json, keeps a 0600 backup
@@ -134,6 +146,25 @@ the same size on every load. fork-bridge-check classifies that as
 non_app_interstitial ("consistent with", not proof of the page's words). A large
 body with no composer is app_without_composer, which is the signature of selector
 drift or a signed-out page and is a different fault.
+
+Project routing runs in whichever process drives the page. On managed-chrome that is
+the daemon, which has the hook. On the launcher host it is a helper process the
+daemon spawns, by default the app bundle's browser-helper.cjs: upstream code, with
+no hook, so a request carrying the project header would be recorded by the server
+and then ignored (a route file with no .outcome.json beside it is the sign).
+`fork-bridge-check build-helper` bundles the checkout's own helper (upstream's
+scripts/build-browser-helper.ts, unmodified) to .launcher-runtime/fork-browser-helper.cjs
+inside the checkout, because the bundle leaves packages external and resolves them
+from its own directory. When that file exists and the host is launcher, HK4 sets
+chatgptWeb.browserHelperScriptPath to it for the turn; a helper path configured by
+other means wins, and FORK_BROWSER_HELPER=<absolute path> names another file. The
+file has its own name so that the dev harness, which rebuilds
+.launcher-runtime/browser-helper.cjs on every run, cannot change what production
+runs. Rebuild it and restart the daemon after every update of the checkout. Switching
+from the app's helper to the fork helper changes the turn namespace once, so a
+conversation retained under the old helper is not continued.
+Without the file, a request for a project logs one [fork] warning and runs as an
+ordinary chat.
 
 The loopback token is not involved: controlToken guards only /admin/*. GET
 /v1/models forwards the caller's own Codex bearer upstream (without it the daemon

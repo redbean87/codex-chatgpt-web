@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import {
+  buildForkHelper,
   defaultHome,
   inspectHostBinding,
   scanTurnFailures,
@@ -11,7 +12,8 @@ import {
 
 export const BRIDGE_CHECK_USAGE = `usage:
   fork-bridge-check [check] [--home <dir>] [--json]
-  fork-bridge-check use-launcher-host [--home <dir>] [--apply]`;
+  fork-bridge-check use-launcher-host [--home <dir>] [--apply]
+  fork-bridge-check build-helper [--output <file>]`;
 
 const EXPLANATION: Record<FailureClass, string> = {
   non_app_interstitial: "page is not the ChatGPT app (tiny body, no composer, no app chrome): consistent with a human-verification interstitial",
@@ -22,12 +24,13 @@ const EXPLANATION: Record<FailureClass, string> = {
   no_page_state: "diagnostic holds no page state",
 };
 
-function parse(args: string[]): { command: string; home: string; json: boolean; apply: boolean } | string {
+function parse(args: string[]): { command: string; home: string; json: boolean; apply: boolean; output?: string } | string {
   const rest = [...args];
   const command = rest[0] && !rest[0].startsWith("-") ? rest.shift()! : "check";
   let home = defaultHome();
   let json = false;
   let apply = false;
+  let output: string | undefined;
   while (rest.length > 0) {
     const arg = rest.shift()!;
     if (arg === "--home") {
@@ -36,12 +39,18 @@ function parse(args: string[]): { command: string; home: string; json: boolean; 
       home = resolve(value);
     } else if (arg === "--json") json = true;
     else if (arg === "--apply") apply = true;
+    else if (arg === "--output") {
+      const value = rest.shift();
+      if (!value) return "--output needs a value";
+      output = resolve(value);
+    }
     else if (arg === "-h" || arg === "--help") return "help";
     else return `unknown argument ${arg}`;
   }
-  if (command !== "check" && command !== "use-launcher-host") return `unknown command ${command}`;
+  if (!["check", "use-launcher-host", "build-helper"].includes(command)) return `unknown command ${command}`;
   if (apply && command !== "use-launcher-host") return "--apply belongs to use-launcher-host";
-  return { command, home, json, apply };
+  if (output && command !== "build-helper") return "--output belongs to build-helper";
+  return { command, home, json, apply, ...(output ? { output } : {}) };
 }
 
 export function runBridgeCheck(args: string[], options: HostOptions = {}, out: (line: string) => void = console.log): number {
@@ -50,6 +59,17 @@ export function runBridgeCheck(args: string[], options: HostOptions = {}, out: (
     if (parsed === "help") { out(BRIDGE_CHECK_USAGE); return 0; }
     console.error(`fork-bridge-check: ${parsed}\n${BRIDGE_CHECK_USAGE}`);
     return 2;
+  }
+  if (parsed.command === "build-helper") {
+    try {
+      const built = buildForkHelper({ ...(parsed.output ? { output: parsed.output } : {}) });
+      out(`built: ${built.output} (${built.bytes} bytes)`);
+      out("next: restart the daemon (codex-chatgpt-web service restart) so launcher turns pick it up");
+      return 0;
+    } catch (error) {
+      console.error(`fork-bridge-check: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
   }
   if (parsed.command === "use-launcher-host") {
     try {

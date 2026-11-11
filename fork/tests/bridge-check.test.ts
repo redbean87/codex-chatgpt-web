@@ -96,6 +96,13 @@ describe("inspectHostBinding", () => {
     expect(inspectHostBinding(elsewhere, { isAlive: alive }).some(f => f.id === "host-path" && f.level === "error")).toBe(true);
   });
 
+  test("a launcher host the launcher does not own explains the doctor's ownership complaint", () => {
+    const home = bridgeHome({ browserHost: "launcher", launcher: { pid: 4242, profile: "production" } });
+    expect(inspectHostBinding(home, { isAlive: alive }).find(f => f.id === "ownership")).toMatchObject({ level: "info" });
+    write(home, "runtime/launcher-supervisor.json", "{}");
+    expect(inspectHostBinding(home, { isAlive: alive }).some(f => f.id === "ownership")).toBe(false);
+  });
+
   test("a missing config is reported rather than thrown", () => {
     expect(inspectHostBinding(tempDir())[0]).toMatchObject({ level: "error", id: "config" });
   });

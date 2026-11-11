@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { cleanupTempDirs } from "./helpers";
+import { cleanupTempDirs, tempDir } from "./helpers";
 import { FAKE_TOKEN, bridgeHome, completedTurn, failedTurn, pageState } from "./bridge-check-fixtures";
 
 afterAll(cleanupTempDirs);
@@ -61,5 +61,16 @@ describe("fork-bridge-check (the real script)", () => {
     expect(run("check", "--apply").code).toBe(2);
     expect(run("frobnicate").code).toBe(2);
     expect(run("--home").code).toBe(2);
+  });
+
+  test("build-helper writes a fork-aware helper where asked and refuses stray arguments", () => {
+    const output = join(tempDir("fork-bridge-helper-"), "fork-browser-helper.cjs");
+    const built = run("build-helper", "--output", output);
+    expect(built.code).toBe(0);
+    expect(built.out).toContain(`built: ${output}`);
+    expect(existsSync(output)).toBe(true);
+    expect(readFileSync(output, "utf8")).toContain("fork-routes");
+    expect(run("build-helper", "--apply").code).toBe(2);
+    expect(run("check", "--output", output).code).toBe(2);
   });
 });

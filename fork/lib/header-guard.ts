@@ -42,6 +42,7 @@ export function unexpectedHeaderReferences(root: string): string[] {
 /** Calls into the fork module from upstream source; each hook has exactly one. */
 export const ROUTING_CALL_SITES: Array<{ call: string; hook: string; block: string }> = [
   { call: "forkRecordProjectRoute(", hook: "HK1", block: "hk1-server.block" },
+  { call: "forkUseBrowserHelper(", hook: "HK4", block: "hk4-server-provider.block" },
   { call: "forkPrepareProjectSurface(", hook: "HK2", block: "hk2-body.block" },
 ];
 

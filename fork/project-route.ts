@@ -1,6 +1,7 @@
 import * as nodeFs from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { selectForkBrowserHelper, type HelperProvider } from "./browser-helper";
 
 /**
  * Per-repository ChatGPT project routing (fork/README "Project routing").
@@ -173,6 +174,27 @@ export function recordRoute(traceId: string | undefined, headers: HeaderSource |
 /** The hook's entry point; identical to recordRoute with production dependencies. */
 export function forkRecordProjectRoute(traceId: string | undefined, headers: HeaderSource | undefined): void {
   recordRoute(traceId, headers);
+}
+
+let warnedStockHelper = false;
+
+/**
+ * HK4's entry point: for a launcher-hosted turn, name the fork-built browser helper on the provider
+ * (fork/browser-helper.ts). It runs before the trace id is computed, because the trace id hashes the
+ * whole provider.chatgptWeb. A request that asked for a project while the launcher still runs the
+ * app's own helper is logged once, because that combination cannot route and would otherwise fail
+ * silently. Never throws.
+ */
+export function forkUseBrowserHelper(provider: HelperProvider | undefined, headers?: HeaderSource): void {
+  try {
+    const selection = selectForkBrowserHelper(provider);
+    if (selection === "not_built" && !warnedStockHelper && isValidProjectName(headers?.get(PROJECT_HEADER)?.trim())) {
+      warnedStockHelper = true;
+      console.warn("[fork] a project was requested but the launcher is running the app's browser helper, which cannot route; run fork/bin/fork-bridge-check build-helper and restart the daemon");
+    }
+  } catch (error) {
+    console.warn(`[fork] browser helper not selected: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 export function readRoute(traceId: string | undefined, deps: RouteDeps = defaultDeps()): string | undefined {

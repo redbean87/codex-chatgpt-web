@@ -1,6 +1,7 @@
-import { chmodSync, copyFileSync, existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { defaultHelperDeps, forkHelperDefaultPath } from "../browser-helper";
 
 /**
  * Read-only diagnosis of a ChatGPT bridge home, plus the one reversible configuration change that
@@ -135,6 +136,8 @@ export interface Finding {
 export interface HostOptions {
   /** Liveness probe for the launcher pid; replaced in tests. */
   isAlive?: (pid: number) => boolean;
+  /** Where the fork browser helper would be; replaced in tests. */
+  helperPath?: string;
 }
 
 function processAlive(pid: number): boolean {
@@ -182,6 +185,23 @@ export function inspectHostBinding(home: string, options: HostOptions = {}): Fin
     if (configured && configured !== surface.path) {
       findings.push({ level: "error", id: "host-path", message: `browserHostDescriptorPath ${configured} is not this home's launcher descriptor ${surface.path}` });
     }
+    if (!existsSync(join(home, "runtime", "launcher-supervisor.json"))) {
+      findings.push({
+        level: "info",
+        id: "ownership",
+        message: "The launcher does not own the daemon (no runtime/launcher-supervisor.json), so `doctor` reports \"Responses proxy ownership "
+          + "could not be verified\" and a legacy-service warning. The daemon works without it; ownership moves only when the launcher's "
+          + "own setup migrates the runtime, which also removes the launchd service.",
+      });
+    }
+    findings.push(existsSync(options.helperPath ?? defaultHelperDeps().helperPath())
+      ? { level: "ok", id: "helper", message: "A fork browser helper is built; launcher turns from a daemon running this checkout can route into projects" }
+      : {
+        level: "info",
+        id: "helper",
+        message: "No fork browser helper is built, so launcher turns use the app's own helper and project routing is inactive "
+          + "for a daemon running from this checkout. Run: fork-bridge-check build-helper, then restart the daemon",
+      });
     return findings;
   }
   if (surface?.alive && surface.profile === "production") {
@@ -245,4 +265,44 @@ export function useLauncherHost(home: string, options: HostOptions & { apply: bo
 
 export function defaultHome(env: NodeJS.ProcessEnv = process.env): string {
   return resolve(env.CODEX_CHATGPT_WEB_HOME?.trim() || join(homedir(), ".codex-chatgpt-web"));
+}
+
+export interface BuildHelperOptions {
+  /** The checkout whose sources are bundled; defaults to the one this script lives in. */
+  root?: string;
+  output?: string;
+  /** Replaced in tests. Runs upstream's own build script and returns its exit status and output. */
+  run?: (command: string[], cwd: string) => { exitCode: number; output: string };
+}
+
+function runBuild(command: string[], cwd: string): { exitCode: number; output: string } {
+  const result = Bun.spawnSync(command, { cwd, stdout: "pipe", stderr: "pipe" });
+  return { exitCode: result.exitCode ?? 1, output: `${result.stderr.toString()}${result.stdout.toString()}`.trim() };
+}
+
+/**
+ * Bundle the checkout's browser helper (upstream's scripts/build-browser-helper.ts, unmodified) to the
+ * file the fork hook selects for launcher turns. The helper is built beside the checkout's node_modules
+ * because it leaves packages external, and it is accepted only if the routing hook is really inside it.
+ * The file is replaced atomically, so a running daemon never reads a half-written helper.
+ */
+export function buildForkHelper(options: BuildHelperOptions = {}): { output: string; bytes: number } {
+  const root = options.root ?? resolve(import.meta.dir, "..", "..");
+  const output = resolve(options.output ?? forkHelperDefaultPath(root));
+  const script = join(root, "scripts", "build-browser-helper.ts");
+  if (!existsSync(script)) throw new Error(`No helper build script at ${script}`);
+  mkdirSync(dirname(output), { recursive: true });
+  const staging = `${output}.${process.pid}.building`;
+  try {
+    const built = (options.run ?? runBuild)([process.execPath, "run", script, staging], root);
+    if (built.exitCode !== 0) throw new Error(`Helper build failed: ${built.output || `exit ${built.exitCode}`}`);
+    if (!readFileSync(staging, "utf8").includes("fork-routes")) {
+      throw new Error("The built helper does not contain the fork routing hook (HK2); is this checkout the fork?");
+    }
+    chmodSync(staging, 0o755);
+    renameSync(staging, output);
+  } finally {
+    rmSync(staging, { force: true });
+  }
+  return { output, bytes: statSync(output).size };
 }
