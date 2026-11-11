@@ -72,6 +72,27 @@ export const HOOKS: HookSpec[] = [
     ],
   },
   {
+    // HK4: name the fork-built browser helper on the provider BEFORE the trace id is computed. The
+    // execution namespace hashes all of provider.chatgptWeb, so a later change would give the server
+    // (HK1, cancellation) and the adapter different trace ids and orphan the recorded route.
+    id: "HK4",
+    file: SERVER,
+    block: "hk4-server-provider.block",
+    anchor: ({ lines, begin, end }) => {
+      const { previous, next } = contextNeighbours({ lines, begin, end });
+      const handler = lastMatch(lines, begin, /^export async function responseRequest\(/);
+      if (handler === -1) return "block must sit in responseRequest";
+      if (previous?.trim() !== "const provider = providerConfig(executionConfig);") return "block must directly follow the provider assignment";
+      if (!/let traceId: string \| undefined;/.test(next ?? "")) return "block must come before the trace id is computed";
+      return undefined;
+    },
+    requires: [
+      { pattern: /const provider = providerConfig\(executionConfig\);/, description: "const provider = providerConfig(executionConfig)" },
+      { pattern: /let traceId: string \| undefined;/, description: "let traceId: string | undefined" },
+      { pattern: /req\.signal\.aborted/, description: "req (the incoming Request)" },
+    ],
+  },
+  {
     id: "HK2-IMPORT",
     file: WORKER,
     block: "hk2-import.block",

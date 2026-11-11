@@ -22,11 +22,18 @@ The registry of hooks and patches is fork/lib/registry.ts.
 Upstream files the fork touches, and why each touch is unavoidable:
 
   src/server.ts
-    HK1-IMPORT  one import of fork/project-route.
+    HK1-IMPORT  one import of fork/project-route (forkRecordProjectRoute and
+                forkUseBrowserHelper).
     HK1         one call, in responseRequest right after traceId is assigned and
                 before the cancelled-session check: forkRecordProjectRoute(
                 traceId, req.headers). The server is the only process that sees
                 the HTTP headers.
+    HK4         one call, in responseRequest directly after the provider is built
+                and before traceId is computed: forkUseBrowserHelper(provider,
+                req.headers). It names the fork-built browser helper on the
+                provider for launcher turns (see "Browser host"). It must come
+                before the trace id because the trace id hashes the whole
+                provider.chatgptWeb.
   src/adapters/chatgpt-web/browser-worker.ts
     HK2-IMPORT  one import of fork/project-route.
     HK2-SIG     one trailing optional parameter, routeKey, on prepareChatSurface.
@@ -84,11 +91,85 @@ Tools
       `bun test ./fork/tests`, then the commits the import brings and the
       upstream-owned diffstat, for review. Exit 0 only if everything passes.
 
+  fork/bin/fork-bridge-check [check] [--home <dir>] [--json]
+      Read-only. Says which browser the daemon of a bridge home drives and what
+      its own failed-turn diagnostics show. It reads config.json,
+      runtime/launcher-browser.json (identity only, never the control token or
+      endpoints) and diagnostics/browser-turns/*/NN-turn-failed.json; it never
+      touches the network, a browser, launchd or the Codex configuration.
+      Exit 1 when the host is wrong. See "Browser host" below.
+
+  fork/bin/fork-bridge-check build-helper [--output <file>]
+      Builds the fork browser helper described under "Browser host". Writes
+      atomically, keeps the previous helper if the build fails, and rejects a
+      bundle that does not contain the routing hook.
+
+  fork/bin/fork-bridge-check use-launcher-host [--home <dir>] [--apply]
+      Dry run unless --apply. Sets browserHost=launcher and
+      browserHostDescriptorPath in config.json, keeps a 0600 backup
+      config.json.pre-launcher-host.<epoch>, leaves every other field (the
+      control token included) untouched, and refuses unless a production
+      launcher is actually running. The daemon reads config.json once at start,
+      so restart it afterwards with `codex-chatgpt-web service restart`.
+
 Nothing here pushes, fast-forwards, deletes a branch or worktree, aborts a
 merge, or resolves a conflict; those steps stay manual.
 
 Tests: `bun test ./fork/tests` (the repository's own `bun run test` runs only
 ./tests, and package.json is deliberately not edited).
+
+
+Browser host
+------------
+
+A bridge home drives ChatGPT through one of two hosts (config.json browserHost):
+
+  launcher        the Codex Web GPT app's own browser, a persistent Electron
+                  profile (partition persist:codex-web-gpt-chatgpt) that the
+                  user signed in to and that ChatGPT's bot check has cleared.
+  managed-chrome  a fresh Playwright-launched Chrome per turn, which replays a
+                  cookie export (browser/storage-state.json). There is no
+                  persistent profile; the signed-in session is only as good as
+                  the exported cookies, and ChatGPT may answer the automation
+                  fingerprint with a human-verification page instead of the app.
+
+`doctor` cannot tell these apart for a managed-chrome home: its login check only
+looks for the exported cookie file and its marker, so it stays green while every
+turn fails. A home on managed-chrome whose launcher is running and signed in is
+the fault `fork-bridge-check` reports.
+
+What the failure looks like in the diagnostics (counts only, no page text):
+every successful turn records a ChatGPT body of 666k-722k characters and a
+7-character title; a turn stopped by a verification page records a body of about
+4,000 characters, a 16-character title, no composer, no overlay and no menu, and
+the same size on every load. fork-bridge-check classifies that as
+non_app_interstitial ("consistent with", not proof of the page's words). A large
+body with no composer is app_without_composer, which is the signature of selector
+drift or a signed-out page and is a different fault.
+
+Project routing runs in whichever process drives the page. On managed-chrome that is
+the daemon, which has the hook. On the launcher host it is a helper process the
+daemon spawns, by default the app bundle's browser-helper.cjs: upstream code, with
+no hook, so a request carrying the project header would be recorded by the server
+and then ignored (a route file with no .outcome.json beside it is the sign).
+`fork-bridge-check build-helper` bundles the checkout's own helper (upstream's
+scripts/build-browser-helper.ts, unmodified) to .launcher-runtime/fork-browser-helper.cjs
+inside the checkout, because the bundle leaves packages external and resolves them
+from its own directory. When that file exists and the host is launcher, HK4 sets
+chatgptWeb.browserHelperScriptPath to it for the turn; a helper path configured by
+other means wins, and FORK_BROWSER_HELPER=<absolute path> names another file. The
+file has its own name so that the dev harness, which rebuilds
+.launcher-runtime/browser-helper.cjs on every run, cannot change what production
+runs. Rebuild it and restart the daemon after every update of the checkout. Switching
+from the app's helper to the fork helper changes the turn namespace once, so a
+conversation retained under the old helper is not continued.
+Without the file, a request for a project logs one [fork] warning and runs as an
+ordinary chat.
+
+The loopback token is not involved: controlToken guards only /admin/*. GET
+/v1/models forwards the caller's own Codex bearer upstream (without it the daemon
+answers 502, with a non-Codex bearer the upstream answers 401), and POST
+/v1/responses for a chatgpt-web/* model needs no bearer at all.
 
 
 Project routing

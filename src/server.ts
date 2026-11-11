@@ -53,7 +53,7 @@ import type { CodexProviderConfig } from "./types";
 import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
 // >>> fork project-route hook HK1-IMPORT (fork/README)
-import { forkRecordProjectRoute } from "../fork/project-route";
+import { forkRecordProjectRoute, forkUseBrowserHelper } from "../fork/project-route";
 // <<< fork project-route hook HK1-IMPORT
 
 type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified" | NativeImageEndpoint;
@@ -749,6 +749,9 @@ export async function responseRequest(
   }
 
   const provider = providerConfig(executionConfig);
+  // >>> fork project-route hook HK4 (fork/README)
+  forkUseBrowserHelper(provider, req.headers);
+  // <<< fork project-route hook HK4
   let traceId: string | undefined;
   try {
     traceId = chatGptWebTraceId(provider, parsed);

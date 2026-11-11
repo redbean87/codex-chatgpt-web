@@ -1,0 +1,5 @@
+#!/usr/bin/env bun
+// Read-only diagnosis of a bridge home's browser host and failed-turn diagnostics; see fork/README.
+import { runBridgeCheck } from "../lib/bridge-check-cli";
+
+process.exit(runBridgeCheck(process.argv.slice(2)));
